@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
   <title>Sleep Kissers</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -11,15 +12,24 @@
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      height: 100vh;
+      min-height: 100vh;
       font-family: 'Segoe UI', sans-serif;
       color: #fff;
       overflow: hidden;
+      touch-action: none;
     }
-    h1 { font-size: 1.8rem; margin-bottom: 8px; color: #ff9fb2; letter-spacing: 3px; }
-    #hud { font-size: 1rem; margin-bottom: 8px; color: #aaa; min-height: 1.2em; }
-    canvas { border: 3px solid #ff9fb2; border-radius: 14px; background: #16213e; display: block; }
-    #instructions { margin-top: 8px; font-size: 0.8rem; color: #666; }
+    h1 { font-size: 1.4rem; margin-bottom: 4px; color: #ff9fb2; letter-spacing: 3px; }
+    #hud { font-size: 0.95rem; margin-bottom: 4px; color: #aaa; min-height: 1.2em; }
+    canvas {
+      border: 3px solid #ff9fb2;
+      border-radius: 14px;
+      background: #16213e;
+      display: block;
+      max-width: 100%;
+      height: auto;
+      touch-action: none;
+    }
+    #instructions { margin-top: 6px; font-size: 0.75rem; color: #666; }
   </style>
 </head>
 <body>
@@ -36,7 +46,7 @@
     const W = canvas.width, H = canvas.height;
 
     // ── State machine ──────────────────────────────────────────────
-    // loading → select → dozing → countdown → playing → win
+    // loading → difficulty → select → dozing → countdown → playing → win
     let state = 'loading';
 
     // Tick counters per state
@@ -53,6 +63,18 @@
 
     const keys = {};
 
+    // ── Virtual joystick (touch) ───────────────────────────────────
+    const JOY_OUTER = 52, JOY_KNOB = 22;
+    const joy = { active: false, id: null, baseX: 0, baseY: 0, dx: 0, dy: 0 };
+
+    function joyUpdate(touchX, touchY) {
+      const ox = touchX - joy.baseX, oy = touchY - joy.baseY;
+      const d  = Math.hypot(ox, oy) || 1;
+      const clamped = Math.min(d, JOY_OUTER - JOY_KNOB);
+      joy.dx = (ox / d) * (clamped / (JOY_OUTER - JOY_KNOB));
+      joy.dy = (oy / d) * (clamped / (JOY_OUTER - JOY_KNOB));
+    }
+
     // ── Image loading ──────────────────────────────────────────────
     const imgs = {};
     let loaded = 0;
@@ -60,7 +82,7 @@
     ALL_KEYS.forEach(n => {
       const img = new Image();
       img.src = n + '.png';
-      img.onload = () => { imgs[n] = img; if (++loaded === 4) state = 'select'; };
+      img.onload = () => { imgs[n] = img; if (++loaded === 4) state = 'difficulty'; };
     });
 
     // ── Selection state ────────────────────────────────────────────
@@ -74,9 +96,19 @@
     let hoveredIdx  = -1;
     let selectedIdx = -1;  // which of the 4 was chosen as kisser
 
+    // ── Difficulty settings ────────────────────────────────────────
+    const DIFFS = [
+      { name: 'Just Kiss Me',  label: 'Easy',   emoji: '😴', color: '#6adf8a',
+        playerSpeed: 3.2, runnerSpeed: 2.6, fleeRadius: 130, wallMargin: 90  },
+      { name: 'Hide and Kiss', label: 'Medium', emoji: '🙈', color: '#f0c040',
+        playerSpeed: 2.8, runnerSpeed: 3.6, fleeRadius: 250, wallMargin: 140 },
+      { name: 'Kiss Pro',      label: 'Hard',   emoji: '😤', color: '#ff6b6b',
+        playerSpeed: 2.4, runnerSpeed: 4.6, fleeRadius: 360, wallMargin: 170 },
+    ];
+    let PLAYER_SPEED = 2.4, RUNNER_SPEED = 4.6, FLEE_RADIUS = 360, WM_VAL = 170;
+    let hoveredDiff = -1;
+
     // ── Characters (set up after selection) ───────────────────────
-    const PLAYER_SPEED  = 2.6;
-    const RUNNER_SPEED  = 3.4;
 
     const player = { x: 0, y: 0, r: 38, imgKey: '', sway: 0 };
 
@@ -209,12 +241,118 @@
       ctx.restore();
     }
 
+    function drawSpeechBubble(x, y, text) {
+      ctx.save();
+      ctx.font = 'bold 14px Segoe UI';
+      const tw  = ctx.measureText(text).width;
+      const pad = 12, bh = 32, br = 10;
+      const bw  = tw + pad * 2;
+      const bx  = x - bw / 2, by = y - bh - 14;
+
+      // Bubble body
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      ctx.roundRect(bx, by, bw, bh, br);
+      ctx.fill();
+      ctx.strokeStyle = '#ffb3c6';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      // Tail
+      ctx.beginPath();
+      ctx.moveTo(x - 7, by + bh - 1);
+      ctx.lineTo(x + 7, by + bh - 1);
+      ctx.lineTo(x, by + bh + 11);
+      ctx.closePath();
+      ctx.fillStyle = '#fff';
+      ctx.fill();
+      ctx.strokeStyle = '#ffb3c6';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      // Text
+      ctx.fillStyle = '#c0306a';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(text, x, by + bh / 2);
+      ctx.restore();
+    }
+
     function drawSwayed(imgKey, x, y, r, swayAmt, alpha) {
       ctx.save();
       ctx.translate(x, y);
       ctx.rotate(swayAmt);
       ctx.translate(-x, -y);
       circleClipImage(imgKey, x, y, r, alpha);
+      ctx.restore();
+    }
+
+    // ── DIFFICULTY SCREEN ─────────────────────────────────────────
+    const CARD_W = 210, CARD_H = 270;
+    const CARD_Y = H / 2 - CARD_H / 2;
+    const CARD_XS = [
+      Math.round(W / 2 - CARD_W * 1.5 - 20),
+      Math.round(W / 2 - CARD_W / 2),
+      Math.round(W / 2 + CARD_W / 2 + 20),
+    ];
+
+    function drawDifficulty() {
+      ctx.save();
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.font = 'bold 26px Segoe UI';
+      ctx.fillStyle = '#ff9fb2';
+      ctx.fillText('How hard do you want it? 💋', W / 2, 72);
+
+      DIFFS.forEach((d, i) => {
+        const cx = CARD_XS[i] + CARD_W / 2;
+        const cy = CARD_Y + CARD_H / 2;
+        const hov = hoveredDiff === i;
+
+        // Card background
+        ctx.save();
+        ctx.shadowColor = hov ? d.color : 'rgba(0,0,0,0.4)';
+        ctx.shadowBlur  = hov ? 22 : 10;
+        ctx.beginPath();
+        ctx.roundRect(CARD_XS[i], CARD_Y, CARD_W, CARD_H, 16);
+        ctx.fillStyle = hov ? '#2a1a4e' : '#1a1030';
+        ctx.fill();
+        ctx.strokeStyle = hov ? d.color : '#333';
+        ctx.lineWidth = hov ? 2.5 : 1.5;
+        ctx.stroke();
+        ctx.restore();
+
+        // Big difficulty word (Easy / Medium / Hard)
+        ctx.font = `bold 32px Segoe UI`;
+        ctx.fillStyle = d.color;
+        ctx.fillText(d.label, cx, CARD_Y + 50);
+
+        // Emoji
+        ctx.font = '46px serif';
+        ctx.fillStyle = '#fff';
+        ctx.fillText(d.emoji, cx, CARD_Y + 112);
+
+        // Game name (subtitle)
+        ctx.font = `bold 15px Segoe UI`;
+        ctx.fillStyle = hov ? '#fff' : '#aaa';
+        ctx.fillText(`"${d.name}"`, cx, CARD_Y + 162);
+
+        // Dot indicators (1 = easy, 3 = hard)
+        const dots = i + 1;
+        for (let k = 0; k < 3; k++) {
+          ctx.beginPath();
+          ctx.arc(cx + (k - 1) * 18, CARD_Y + 200, 7, 0, Math.PI * 2);
+          ctx.fillStyle = k < dots ? d.color : '#333';
+          ctx.fill();
+        }
+
+        // Click hint
+        if (hov) {
+          ctx.font = 'bold 13px Segoe UI';
+          ctx.fillStyle = '#fff';
+          ctx.fillText('tap to choose', cx, CARD_Y + CARD_H - 22);
+        }
+      });
+
       ctx.restore();
     }
 
@@ -248,7 +386,7 @@
         ctx.textAlign = 'center';
         ctx.font = hovered ? 'bold 13px Segoe UI' : '12px Segoe UI';
         ctx.fillStyle = hovered ? '#ff9fb2' : '#666';
-        ctx.fillText(hovered ? '← Pick me! 💋' : `Player ${i + 1}`, p.x, p.y + r + 18);
+        ctx.fillText(hovered ? 'Pick me bitch! 💋' : `Player ${i + 1}`, p.x, p.y + r + 18);
         ctx.restore();
       });
     }
@@ -390,7 +528,7 @@
 
     // ── UPDATE ─────────────────────────────────────────────────────
     function update() {
-      if (state === 'loading' || state === 'select') return;
+      if (state === 'loading' || state === 'difficulty' || state === 'select') return;
 
       if (state === 'dozing') {
         dozingTick++;
@@ -423,6 +561,8 @@
       if (keys['ArrowUp']    || keys['w'] || keys['W']) dy -= 1;
       if (keys['ArrowDown']  || keys['s'] || keys['S']) dy += 1;
       if (dx !== 0 && dy !== 0) { dx *= 0.707; dy *= 0.707; }
+      // Joystick overrides keyboard when active
+      if (joy.active) { dx = joy.dx; dy = joy.dy; }
       player.x += dx * PLAYER_SPEED;
       player.y += dy * PLAYER_SPEED;
       player.x = Math.max(player.r, Math.min(W - player.r, player.x));
@@ -430,20 +570,49 @@
       player.sway += 0.09;
 
       // Runners move + flee from kisser
-      const FLEE_RADIUS = 260;
-      runners.forEach(rn => {
+      runners.forEach((rn, ri) => {
         if (rn.kissed) { rn.vx *= 0.96; rn.vy *= 0.96; }
         else {
+          // ── Wall avoidance (quadratic) ──
+          let wx = 0, wy = 0;
+          if (rn.x < WM_VAL)       { const t = 1 - rn.x / WM_VAL;           wx += t * t * 6; }
+          if (rn.x > W - WM_VAL)   { const t = 1 - (W - rn.x) / WM_VAL;     wx -= t * t * 6; }
+          if (rn.y < WM_VAL)       { const t = 1 - rn.y / WM_VAL;            wy += t * t * 6; }
+          if (rn.y > H - WM_VAL)   { const t = 1 - (H - rn.y) / WM_VAL;     wy -= t * t * 6; }
+
+          // ── Runner-runner separation (prevents overlapping / shared paths) ──
+          runners.forEach((other, oi) => {
+            if (oi === ri || other.kissed) return;
+            const sdx = rn.x - other.x, sdy = rn.y - other.y;
+            const sd  = Math.hypot(sdx, sdy);
+            const minD = rn.r + other.r + 18;
+            if (sd < minD && sd > 0) {
+              const push = (1 - sd / minD) * 5;
+              wx += (sdx / sd) * push;
+              wy += (sdy / sd) * push;
+            }
+          });
+
+          // ── Flee force (away from player) ──
+          let fx = 0, fy = 0;
           const fdx = rn.x - player.x, fdy = rn.y - player.y;
           const d = Math.hypot(fdx, fdy);
           if (d < FLEE_RADIUS && d > 0) {
-            // Steer velocity away from player; stronger the closer they are
-            const strength = (1 - d / FLEE_RADIUS) * 0.85;
-            rn.vx += (fdx / d) * strength;
-            rn.vy += (fdy / d) * strength;
-            const spd = Math.hypot(rn.vx, rn.vy);
-            if (spd > 0) { rn.vx = rn.vx / spd * RUNNER_SPEED; rn.vy = rn.vy / spd * RUNNER_SPEED; }
+            const t = 1 - d / FLEE_RADIUS;
+            fx = (fdx / d) * t * 3;
+            fy = (fdy / d) * t * 3;
           }
+
+          // ── Combine → smooth steer ──
+          const sx = fx + wx, sy = fy + wy;
+          const sm = Math.hypot(sx, sy);
+          if (sm > 0.05) {
+            rn.vx += ((sx / sm) * RUNNER_SPEED - rn.vx) * 0.13;
+            rn.vy += ((sy / sm) * RUNNER_SPEED - rn.vy) * 0.13;
+          }
+
+          const spd = Math.hypot(rn.vx, rn.vy);
+          if (spd > RUNNER_SPEED) { rn.vx = rn.vx / spd * RUNNER_SPEED; rn.vy = rn.vy / spd * RUNNER_SPEED; }
         }
         rn.x += rn.vx; rn.y += rn.vy;
         clamp(rn);
@@ -488,6 +657,7 @@
         return;
       }
 
+      if (state === 'difficulty') { drawDifficulty(); return; }
       if (state === 'select')    { drawSelect(Date.now() / 16); return; }
       if (state === 'dozing')    { drawDozing(dozingTick); return; }
       if (state === 'countdown') { drawCountdown(countdownTick); return; }
@@ -508,6 +678,27 @@
       // Floating hearts
       for (const h of hearts) heart(h.x, h.y, h.size, h.life / 100);
 
+      // Taunt bubble when only one runner left
+      if (score === 2) {
+        const last = runners.find(rn => !rn.kissed);
+        if (last) drawSpeechBubble(last.x, last.y - last.r - 5, 'Come get me big boy! 😘');
+      }
+
+      // Virtual joystick
+      if (joy.active) {
+        const knobX = joy.baseX + joy.dx * (JOY_OUTER - JOY_KNOB);
+        const knobY = joy.baseY + joy.dy * (JOY_OUTER - JOY_KNOB);
+        ctx.save();
+        ctx.globalAlpha = 0.35;
+        ctx.beginPath(); ctx.arc(joy.baseX, joy.baseY, JOY_OUTER, 0, Math.PI * 2);
+        ctx.strokeStyle = '#fff'; ctx.lineWidth = 3; ctx.stroke();
+        ctx.fillStyle = '#fff'; ctx.fill();
+        ctx.globalAlpha = 0.7;
+        ctx.beginPath(); ctx.arc(knobX, knobY, JOY_KNOB, 0, Math.PI * 2);
+        ctx.fillStyle = '#fff'; ctx.fill();
+        ctx.restore();
+      }
+
       if (state === 'win') drawWin();
     }
 
@@ -515,17 +706,84 @@
     document.addEventListener('keydown', e => { keys[e.key] = true; e.preventDefault(); });
     document.addEventListener('keyup',   e => { keys[e.key] = false; });
 
+    function canvasTouch(touch) {
+      const rect = canvas.getBoundingClientRect();
+      return {
+        x: (touch.clientX - rect.left) * (W / rect.width),
+        y: (touch.clientY - rect.top)  * (H / rect.height),
+      };
+    }
+
+    canvas.addEventListener('touchstart', e => {
+      e.preventDefault();
+      for (const t of e.changedTouches) {
+        const p = canvasTouch(t);
+        if (state === 'playing' && !joy.active) {
+          joy.active = true; joy.id = t.identifier;
+          joy.baseX = p.x; joy.baseY = p.y;
+          joy.dx = 0; joy.dy = 0;
+        }
+      }
+    }, { passive: false });
+
+    canvas.addEventListener('touchmove', e => {
+      e.preventDefault();
+      for (const t of e.changedTouches) {
+        if (t.identifier === joy.id) {
+          const p = canvasTouch(t);
+          joyUpdate(p.x, p.y);
+        }
+      }
+    }, { passive: false });
+
+    canvas.addEventListener('touchend', e => {
+      e.preventDefault();
+      for (const t of e.changedTouches) {
+        if (t.identifier === joy.id) {
+          joy.active = false; joy.dx = 0; joy.dy = 0;
+        }
+      }
+    }, { passive: false });
+
     canvas.addEventListener('mousemove', e => {
-      if (state !== 'select') { canvas.style.cursor = 'default'; return; }
       const rect = canvas.getBoundingClientRect();
       const scaleX = W / rect.width, scaleY = H / rect.height;
       const mx = (e.clientX - rect.left) * scaleX;
       const my = (e.clientY - rect.top)  * scaleY;
+
+      if (state === 'difficulty') {
+        hoveredDiff = DIFFS.findIndex((_, i) =>
+          mx >= CARD_XS[i] && mx <= CARD_XS[i] + CARD_W &&
+          my >= CARD_Y      && my <= CARD_Y + CARD_H);
+        canvas.style.cursor = hoveredDiff >= 0 ? 'pointer' : 'default';
+        return;
+      }
+      if (state !== 'select') { canvas.style.cursor = 'default'; return; }
       hoveredIdx = SELECT_POS.findIndex(p => dist({x: mx, y: my}, p) < SELECT_R + 10);
       canvas.style.cursor = hoveredIdx >= 0 ? 'pointer' : 'default';
     });
 
     canvas.addEventListener('click', e => {
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = W / rect.width, scaleY = H / rect.height;
+      const mx = (e.clientX - rect.left) * scaleX;
+      const my = (e.clientY - rect.top)  * scaleY;
+
+      if (state === 'difficulty') {
+        const di = DIFFS.findIndex((_, i) =>
+          mx >= CARD_XS[i] && mx <= CARD_XS[i] + CARD_W &&
+          my >= CARD_Y      && my <= CARD_Y + CARD_H);
+        if (di < 0) return;
+        const d = DIFFS[di];
+        PLAYER_SPEED = d.playerSpeed;
+        RUNNER_SPEED = d.runnerSpeed;
+        FLEE_RADIUS  = d.fleeRadius;
+        WM_VAL       = d.wallMargin;
+        state = 'select';
+        hoveredDiff = -1;
+        return;
+      }
+
       if (state !== 'select' || hoveredIdx < 0) return;
       selectedIdx = hoveredIdx;
 
