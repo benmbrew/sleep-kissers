@@ -733,14 +733,49 @@
           const p = canvasTouch(t);
           joyUpdate(p.x, p.y);
         }
+        // Highlight difficulty card under finger
+        if (state === 'difficulty') {
+          const p = canvasTouch(t);
+          hoveredDiff = DIFFS.findIndex((_, i) =>
+            p.x >= CARD_XS[i] && p.x <= CARD_XS[i] + CARD_W &&
+            p.y >= CARD_Y      && p.y <= CARD_Y + CARD_H);
+        }
       }
     }, { passive: false });
 
     canvas.addEventListener('touchend', e => {
       e.preventDefault();
       for (const t of e.changedTouches) {
+        // Joystick release
         if (t.identifier === joy.id) {
           joy.active = false; joy.dx = 0; joy.dy = 0;
+        }
+
+        // Tap on difficulty or select screens (click is suppressed by preventDefault above)
+        const p = canvasTouch(t);
+
+        if (state === 'difficulty') {
+          const di = DIFFS.findIndex((_, i) =>
+            p.x >= CARD_XS[i] && p.x <= CARD_XS[i] + CARD_W &&
+            p.y >= CARD_Y      && p.y <= CARD_Y + CARD_H);
+          if (di >= 0) {
+            const d = DIFFS[di];
+            PLAYER_SPEED = d.playerSpeed; RUNNER_SPEED = d.runnerSpeed;
+            FLEE_RADIUS  = d.fleeRadius;  WM_VAL       = d.wallMargin;
+            state = 'select'; hoveredDiff = -1;
+          }
+        } else if (state === 'select') {
+          const si = SELECT_POS.findIndex(pos => dist({ x: p.x, y: p.y }, pos) < SELECT_R + 10);
+          if (si >= 0) {
+            selectedIdx   = si;
+            player.imgKey = ALL_KEYS[selectedIdx];
+            const others  = ALL_KEYS.filter((_, i) => i !== selectedIdx);
+            runners.forEach((rn, i) => { rn.imgKey = others[i]; });
+            player.x = W / 2; player.y = H / 2;
+            state = 'dozing'; dozingTick = 0;
+            instrEl.textContent = 'Touch screen to sleep-walk';
+            canvas.style.cursor = 'default';
+          }
         }
       }
     }, { passive: false });
