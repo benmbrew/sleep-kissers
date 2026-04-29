@@ -60,6 +60,12 @@
 
     let winTick = 0;
     let score   = 0;
+    const PLAYER_NAMES = ['Bri', 'Benzi', 'Gabey', 'Jonny Boy'];
+    let playingTick = 0;
+    let kissReactionRunner  = null;
+    let kissReaction2Runner = null;
+    let kissReactionTick    = 0;
+    const KISS_REACTION_DURATION = 150;
 
     const keys = {};
 
@@ -386,7 +392,7 @@
         ctx.textAlign = 'center';
         ctx.font = hovered ? 'bold 13px Segoe UI' : '12px Segoe UI';
         ctx.fillStyle = hovered ? '#ff9fb2' : '#666';
-        ctx.fillText(hovered ? 'Pick me bitch! 💋' : `Player ${i + 1}`, p.x, p.y + r + 18);
+        ctx.fillText(hovered ? 'Pick me bitch! 💋' : PLAYER_NAMES[i], p.x, p.y + r + 18);
         ctx.restore();
       });
     }
@@ -623,6 +629,13 @@
           spawnHearts(rn.x, rn.y);
           score++;
           scoreEl.textContent = score;
+          if (score === 1) {
+            const remaining = runners.filter(r2 => !r2.kissed);
+            const pick = Math.floor(Math.random() * remaining.length);
+            kissReactionRunner  = remaining[pick];
+            kissReaction2Runner = remaining[1 - pick];
+            kissReactionTick = 0;
+          }
           if (score >= 3) setTimeout(() => { state = 'win'; }, 700);
         }
       });
@@ -632,6 +645,9 @@
       if (zzzTimer % 55 === 0) {
         spawnZzz(player.x + player.r * 0.6, player.y - player.r * 0.85);
       }
+
+      playingTick++;
+      if (kissReactionRunner && kissReactionTick < KISS_REACTION_DURATION) kissReactionTick++;
 
       for (let i = hearts.length - 1; i >= 0; i--) {
         const h = hearts[i];
@@ -678,10 +694,25 @@
       // Floating hearts
       for (const h of hearts) heart(h.x, h.y, h.size, h.life / 100);
 
-      // Taunt bubble when only one runner left
-      if (score === 2) {
+      // Sequential speech bubbles
+      const playerName = PLAYER_NAMES[selectedIdx];
+      if (score === 0) {
+        // Three lines, each shown for ~90 ticks with ~20-tick gaps between them
+        if      (playingTick >= 0   && playingTick < 90  && !runners[0].kissed)
+          drawSpeechBubble(runners[0].x, runners[0].y - runners[0].r - 5, 'Is he sleep walking?');
+        else if (playingTick >= 110 && playingTick < 200 && !runners[1].kissed)
+          drawSpeechBubble(runners[1].x, runners[1].y - runners[1].r - 5, `${playerName} wake up man`);
+        else if (playingTick >= 220 && playingTick < 310 && !runners[2].kissed)
+          drawSpeechBubble(runners[2].x, runners[2].y - runners[2].r - 5, 'yo dude wake up lol');
+      } else if (score === 1) {
+        if (kissReactionRunner && !kissReactionRunner.kissed && kissReactionTick < KISS_REACTION_DURATION) {
+          drawSpeechBubble(kissReactionRunner.x, kissReactionRunner.y - kissReactionRunner.r - 5, 'oh my god did they just kiss??');
+        } else if (kissReaction2Runner && !kissReaction2Runner.kissed && kissReactionTick >= KISS_REACTION_DURATION + 20 && kissReactionTick < KISS_REACTION_DURATION + 170) {
+          drawSpeechBubble(kissReaction2Runner.x, kissReaction2Runner.y - kissReaction2Runner.r - 5, "dude wtf he's trying to kiss us!");
+        }
+      } else if (score === 2) {
         const last = runners.find(rn => !rn.kissed);
-        if (last) drawSpeechBubble(last.x, last.y - last.r - 5, 'Come get me big boy! 😘');
+        if (last) drawSpeechBubble(last.x, last.y - last.r - 5, `PLEASE GOD ${playerName} WAKE UP, PLEASE WAKE UP`);
       }
 
       // Virtual joystick
