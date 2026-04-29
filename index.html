@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Sleep Kissers</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #0f0f1e;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      font-family: 'Segoe UI', sans-serif;
+      color: #fff;
+      overflow: hidden;
+    }
+    h1 { font-size: 1.8rem; margin-bottom: 8px; color: #ff9fb2; letter-spacing: 3px; }
+    #hud { font-size: 1rem; margin-bottom: 8px; color: #aaa; min-height: 1.2em; }
+    canvas { border: 3px solid #ff9fb2; border-radius: 14px; background: #16213e; display: block; }
+    #instructions { margin-top: 8px; font-size: 0.8rem; color: #666; }
+  </style>
+</head>
+<body>
+  <h1>💤 Sleep Kissers 💋</h1>
+  <div id="hud">Kisses: <span id="score">0</span> / 3</div>
+  <canvas id="gameCanvas" width="860" height="600"></canvas>
+  <div id="instructions">WASD or Arrow Keys &nbsp;·&nbsp; Click a face to pick your kisser</div>
+
+  <script>
+    const canvas  = document.getElementById('gameCanvas');
+    const ctx     = canvas.getContext('2d');
+    const scoreEl = document.getElementById('score');
+    const instrEl = document.querySelector('#instructions');
+    const W = canvas.width, H = canvas.height;
+
+    // ── State machine ──────────────────────────────────────────────
+    // loading → select → dozing → countdown → playing → win
+    let state = 'loading';
+
+    // Tick counters per state
+    let dozingTick    = 0;
+    const DOZING_TICKS = 100;
+
+    let countdownTick = 0;
+    const CD_PER_NUM  = 65;   // frames per number (3, 2, 1)
+    const GO_TICKS    = 45;   // frames for GO! burst
+    const COUNTDOWN_TOTAL = CD_PER_NUM * 3 + GO_TICKS;
+
+    let winTick = 0;
+    let score   = 0;
+
+    const keys = {};
+
+    // ── Image loading ──────────────────────────────────────────────
+    const imgs = {};
+    let loaded = 0;
+    const ALL_KEYS = ['headshot1','headshot2','headshot3','headshot4'];
+    ALL_KEYS.forEach(n => {
+      const img = new Image();
+      img.src = n + '.png';
+      img.onload = () => { imgs[n] = img; if (++loaded === 4) state = 'select'; };
+    });
+
+    // ── Selection state ────────────────────────────────────────────
+    const SELECT_R = 44;
+    const SELECT_POS = [
+      { x: Math.round(W * 0.13), y: H / 2 },
+      { x: Math.round(W * 0.38), y: H / 2 },
+      { x: Math.round(W * 0.62), y: H / 2 },
+      { x: Math.round(W * 0.87), y: H / 2 },
+    ];
+    let hoveredIdx  = -1;
+    let selectedIdx = -1;  // which of the 4 was chosen as kisser
+
+    // ── Characters (set up after selection) ───────────────────────
+    const PLAYER_SPEED  = 2.6;
+    const RUNNER_SPEED  = 3.4;
+
+    const player = { x: 0, y: 0, r: 38, imgKey: '', sway: 0 };
+
+    // 3 runner starting configs (filled in after pick)
+    const runners = [
+      { x: 110,     y: 110,     r: 30, vx: 0, vy: 0, imgKey: '', kissed: false, kissTimer: 0 },
+      { x: W - 110, y: 110,     r: 30, vx: 0, vy: 0, imgKey: '', kissed: false, kissTimer: 0 },
+      { x: W / 2,   y: H - 110, r: 30, vx: 0, vy: 0, imgKey: '', kissed: false, kissTimer: 0 },
+    ];
+
+    // Initial velocities — normalised to RUNNER_SPEED at game start
+    const INIT_VEL = [
+      {  vx:  1.1, vy:  0.8 },
+      {  vx: -1.2, vy:  0.9 },
+      {  vx:  0.7, vy: -1.3 },
+    ];
+
+    // ── Particles ──────────────────────────────────────────────────
+    const hearts = [];
+    const zzzs   = [];
+    let zzzTimer  = 0;
+
+    function spawnHearts(x, y) {
+      for (let i = 0; i < 7; i++) {
+        hearts.push({
+          x: x + (Math.random() - 0.5) * 30,
+          y,
+          vx: (Math.random() - 0.5) * 2,
+          vy: -(1.2 + Math.random() * 1.8),
+          size: 10 + Math.random() * 11,
+          life: 75 + Math.random() * 30,
+        });
+      }
+    }
+
+    function spawnZzz(x, y) {
+      zzzs.push({ x, y, dx: 0.35, dy: -0.5, life: 95, alpha: 0.9 });
+    }
+
+    // ── Helpers ────────────────────────────────────────────────────
+    function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
+
+    function clamp(c) {
+      if (c.x - c.r < 0)   { c.x = c.r;     c.vx =  Math.abs(c.vx); }
+      if (c.x + c.r > W)   { c.x = W - c.r; c.vx = -Math.abs(c.vx); }
+      if (c.y - c.r < 0)   { c.y = c.r;     c.vy =  Math.abs(c.vy); }
+      if (c.y + c.r > H)   { c.y = H - c.r; c.vy = -Math.abs(c.vy); }
+    }
+
+    function normalise(vx, vy, speed) {
+      const m = Math.hypot(vx, vy) || 1;
+      return { vx: vx / m * speed, vy: vy / m * speed };
+    }
+
+    // ── Draw helpers ───────────────────────────────────────────────
+    function circleClipImage(key, x, y, r, alpha) {
+      const img = imgs[key];
+      if (!img) return;
+      // object-fit: cover — scale so the image fills the circle without stretching
+      const scale = Math.max((r * 2) / img.naturalWidth, (r * 2) / img.naturalHeight);
+      const dw = img.naturalWidth * scale, dh = img.naturalHeight * scale;
+      ctx.save();
+      ctx.globalAlpha = alpha ?? 1;
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.clip();
+      ctx.drawImage(img, x - dw / 2, y - dh / 2, dw, dh);
+      ctx.restore();
+    }
+
+    function ring(x, y, r, color, lw) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(x, y, r + 3, 0, Math.PI * 2);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = lw ?? 3;
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    function glow(x, y, r, color) {
+      ctx.save();
+      ctx.shadowColor = color;
+      ctx.shadowBlur  = 22;
+      ctx.beginPath();
+      ctx.arc(x, y, r + 4, 0, Math.PI * 2);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 3;
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    function heart(x, y, size, alpha) {
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, alpha);
+      ctx.translate(x, y);
+      ctx.fillStyle = '#ff6080';
+      ctx.beginPath();
+      ctx.moveTo(0, -size * 0.3);
+      ctx.bezierCurveTo( size*.5, -size,  size,   -size*.3,  size*.5,  size*.3);
+      ctx.bezierCurveTo( size*.25, size*.7, 0, size*.9, 0, size);
+      ctx.bezierCurveTo( 0, size*.9, -size*.25, size*.7, -size*.5,  size*.3);
+      ctx.bezierCurveTo(-size, -size*.3, -size*.5, -size, 0, -size*.3);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    function kissOverlay(x, y, r) {
+      ctx.save();
+      ctx.globalAlpha = 0.5;
+      ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fillStyle = '#ff9fb2'; ctx.fill();
+      ctx.restore();
+      ctx.save();
+      ctx.font = `${Math.round(r * 0.75)}px serif`;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText('💋', x, y);
+      ctx.restore();
+    }
+
+    function drawClosedEyes(x, y, r) {
+      ctx.save();
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+
+      // Red lips on the lower face
+      ctx.font = `${Math.round(r * 0.55)}px serif`;
+      ctx.fillText('👄', x, y + r * 0.32);
+
+      ctx.restore();
+    }
+
+    function drawSwayed(imgKey, x, y, r, swayAmt, alpha) {
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(swayAmt);
+      ctx.translate(-x, -y);
+      circleClipImage(imgKey, x, y, r, alpha);
+      ctx.restore();
+    }
+
+    // ── SELECT SCREEN ──────────────────────────────────────────────
+    function drawSelect(tick) {
+      // Title
+      ctx.save();
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.font = 'bold 26px Segoe UI';
+      ctx.fillStyle = '#ff9fb2';
+      ctx.fillText('Choose your Kisser 💤', W / 2, 68);
+      ctx.font = '15px Segoe UI';
+      ctx.fillStyle = '#888';
+      ctx.fillText('You\'ll fall asleep and sleepwalk after them', W / 2, 100);
+      ctx.restore();
+
+      SELECT_POS.forEach((p, i) => {
+        const hovered = hoveredIdx === i;
+        const r = SELECT_R + (hovered ? 6 : 0);
+        const sway = Math.sin(tick * 0.05 + i * 1.3) * 0.07;
+
+        drawSwayed(ALL_KEYS[i], p.x, p.y, r, sway, 1);
+
+        if (hovered) {
+          glow(p.x, p.y, r, '#ff9fb2');
+        } else {
+          ring(p.x, p.y, r, '#555', 2);
+        }
+
+        ctx.save();
+        ctx.textAlign = 'center';
+        ctx.font = hovered ? 'bold 13px Segoe UI' : '12px Segoe UI';
+        ctx.fillStyle = hovered ? '#ff9fb2' : '#666';
+        ctx.fillText(hovered ? '← Pick me! 💋' : `Player ${i + 1}`, p.x, p.y + r + 18);
+        ctx.restore();
+      });
+    }
+
+    // ── DOZING SCREEN ──────────────────────────────────────────────
+    function drawDozing(tick) {
+      const prog   = tick / DOZING_TICKS;   // 0→1
+      const cx = W / 2, cy = H / 2;
+
+      // Dreamy purple vignette that grows
+      const grad = ctx.createRadialGradient(cx, cy, 30, cx, cy, W * 0.7);
+      grad.addColorStop(0,   'rgba(40,0,60,0)');
+      grad.addColorStop(0.5, `rgba(20,0,40,${prog * 0.4})`);
+      grad.addColorStop(1,   `rgba(10,0,20,${prog * 0.7})`);
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, W, H);
+
+      // Character sways more and more as they fall asleep
+      const swayAmt = Math.sin(tick * 0.08) * (0.08 + prog * 0.18);
+      const r = player.r + 4;
+      drawSwayed(player.imgKey, cx, cy, r, swayAmt, 1);
+      drawClosedEyes(cx, cy, r);
+      glow(cx, cy, r, `rgba(150,100,255,${prog * 0.9})`);
+
+      // Zzz build up
+      const zCount = Math.floor(prog * 3) + 1;
+      ctx.save();
+      for (let z = 0; z < zCount; z++) {
+        const t   = tick * 0.04 + z * 1.1;
+        const zx  = cx + r * 0.65 + z * 14 + Math.sin(t) * 3;
+        const zy  = cy - r - z * 14 + Math.cos(t * 1.2) * 3;
+        const sz  = 16 + z * 4;
+        const al  = Math.min(1, prog * 2) * (0.6 + 0.4 * Math.sin(t));
+        ctx.globalAlpha = al;
+        ctx.fillStyle = '#bbbbdd';
+        ctx.font = `bold ${sz}px serif`;
+        ctx.textAlign = 'left';
+        ctx.fillText('z', zx, zy);
+      }
+      ctx.globalAlpha = 1;
+      ctx.restore();
+
+      // Text
+      const textAlpha = Math.min(1, tick / 20);
+      ctx.save();
+      ctx.globalAlpha = textAlpha;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillStyle = 'rgba(15,15,30,0.6)';
+      ctx.beginPath();
+      ctx.roundRect(W/2 - 160, cy + r + 20, 320, 50, 10);
+      ctx.fill();
+      ctx.font = 'bold 20px Segoe UI';
+      ctx.fillStyle = '#c8aaf0';
+      ctx.fillText('💤 falling asleep…', W / 2, cy + r + 46);
+      ctx.restore();
+    }
+
+    // ── COUNTDOWN SCREEN ───────────────────────────────────────────
+    function drawCountdown(tick) {
+      // Draw game board preview — runners awake, kisser sleeping in center
+      drawGameBoard(tick);
+
+      // Countdown number
+      const numIdx = Math.floor(tick / CD_PER_NUM);  // 0=3, 1=2, 2=1, 3=GO
+      const numProg = (tick % CD_PER_NUM) / CD_PER_NUM;
+
+      ctx.save();
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+
+      if (numIdx < 3) {
+        const num   = 3 - numIdx;
+        const scale = 1 + numProg * 0.4;
+        const alpha = 1 - numProg * 0.7;
+        ctx.globalAlpha = alpha;
+        ctx.font = `bold ${Math.round(90 * scale)}px Segoe UI`;
+        ctx.fillStyle = '#fff';
+        ctx.fillText(String(num), W / 2, H / 2);
+      } else {
+        // GO!
+        const goProg = (tick - CD_PER_NUM * 3) / GO_TICKS;
+        const scale  = 1 + goProg * 0.8;
+        const alpha  = 1 - goProg;
+        ctx.globalAlpha = alpha;
+        ctx.font = `bold ${Math.round(82 * scale)}px Segoe UI`;
+        ctx.fillStyle = '#ff9fb2';
+        ctx.fillText('GO! 💋', W / 2, H / 2);
+      }
+      ctx.restore();
+    }
+
+    // Shared: draw kisser (player) and runners in their game positions
+    function drawGameBoard(cdTick) {
+      // Kisser — sleepwalking sway + Zzz
+      const psway = Math.sin((cdTick ?? 0) * 0.06) * 0.13;
+      drawSwayed(player.imgKey, player.x, player.y, player.r, psway, 1);
+      drawClosedEyes(player.x, player.y, player.r);
+      glow(player.x, player.y, player.r, '#6666ff');
+
+      // Zzz on kisser during countdown
+      if (cdTick !== undefined) {
+        const t = cdTick * 0.05;
+        ctx.save();
+        ctx.fillStyle = '#aac'; ctx.font = 'bold 14px serif';
+        ctx.textAlign = 'left';
+        ctx.globalAlpha = 0.8;
+        ctx.fillText('z', player.x + player.r * 0.6 + Math.sin(t)*3,     player.y - player.r - 6  + Math.cos(t*1.2)*3);
+        ctx.font = 'bold 10px serif';
+        ctx.fillText('z', player.x + player.r * 0.6 + 13 + Math.sin(t+1)*3, player.y - player.r - 18 + Math.cos(t*1.1)*3);
+        ctx.globalAlpha = 1;
+        ctx.restore();
+      }
+
+      // Runners — awake, alert, no sway
+      runners.forEach(rn => {
+        circleClipImage(rn.imgKey, rn.x, rn.y, rn.r);
+        if (rn.kissed) {
+          kissOverlay(rn.x, rn.y, rn.r);
+        } else {
+          ring(rn.x, rn.y, rn.r, '#f0c040', 2.5);
+        }
+      });
+    }
+
+    // ── WIN SCREEN ─────────────────────────────────────────────────
+    function drawWin() {
+      ctx.save();
+      ctx.fillStyle = 'rgba(10,10,20,0.72)';
+      ctx.fillRect(0, 0, W, H);
+      const pulse = 1 + 0.04 * Math.sin(winTick * 0.12);
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.font = `bold ${Math.round(46 * pulse)}px Segoe UI`;
+      ctx.fillStyle = '#ff9fb2';
+      ctx.fillText('All kissed! 💋💋💋', W / 2, H / 2 - 22);
+      ctx.font = '20px Segoe UI';
+      ctx.fillStyle = '#ccc';
+      ctx.fillText('Sweet dreams 💤', W / 2, H / 2 + 28);
+      ctx.restore();
+    }
+
+    // ── UPDATE ─────────────────────────────────────────────────────
+    function update() {
+      if (state === 'loading' || state === 'select') return;
+
+      if (state === 'dozing') {
+        dozingTick++;
+        if (dozingTick >= DOZING_TICKS) {
+          state = 'countdown';
+          countdownTick = 0;
+        }
+        return;
+      }
+
+      if (state === 'countdown') {
+        countdownTick++;
+        if (countdownTick >= COUNTDOWN_TOTAL) {
+          state = 'playing';
+          // Kick runners off
+          runners.forEach((rn, i) => {
+            const v = normalise(INIT_VEL[i].vx, INIT_VEL[i].vy, RUNNER_SPEED);
+            rn.vx = v.vx; rn.vy = v.vy;
+          });
+        }
+        return;
+      }
+
+      if (state === 'win') { winTick++; return; }
+
+      // ── Playing ──
+      let dx = 0, dy = 0;
+      if (keys['ArrowLeft']  || keys['a'] || keys['A']) dx -= 1;
+      if (keys['ArrowRight'] || keys['d'] || keys['D']) dx += 1;
+      if (keys['ArrowUp']    || keys['w'] || keys['W']) dy -= 1;
+      if (keys['ArrowDown']  || keys['s'] || keys['S']) dy += 1;
+      if (dx !== 0 && dy !== 0) { dx *= 0.707; dy *= 0.707; }
+      player.x += dx * PLAYER_SPEED;
+      player.y += dy * PLAYER_SPEED;
+      player.x = Math.max(player.r, Math.min(W - player.r, player.x));
+      player.y = Math.max(player.r, Math.min(H - player.r, player.y));
+      player.sway += 0.09;
+
+      // Runners move + flee from kisser
+      const FLEE_RADIUS = 260;
+      runners.forEach(rn => {
+        if (rn.kissed) { rn.vx *= 0.96; rn.vy *= 0.96; }
+        else {
+          const fdx = rn.x - player.x, fdy = rn.y - player.y;
+          const d = Math.hypot(fdx, fdy);
+          if (d < FLEE_RADIUS && d > 0) {
+            // Steer velocity away from player; stronger the closer they are
+            const strength = (1 - d / FLEE_RADIUS) * 0.85;
+            rn.vx += (fdx / d) * strength;
+            rn.vy += (fdy / d) * strength;
+            const spd = Math.hypot(rn.vx, rn.vy);
+            if (spd > 0) { rn.vx = rn.vx / spd * RUNNER_SPEED; rn.vy = rn.vy / spd * RUNNER_SPEED; }
+          }
+        }
+        rn.x += rn.vx; rn.y += rn.vy;
+        clamp(rn);
+        if (rn.kissTimer > 0) rn.kissTimer--;
+
+        if (!rn.kissed && dist(player, rn) < player.r + rn.r) {
+          rn.kissed = true; rn.kissTimer = 90;
+          spawnHearts(rn.x, rn.y);
+          score++;
+          scoreEl.textContent = score;
+          if (score >= 3) setTimeout(() => { state = 'win'; }, 700);
+        }
+      });
+
+      // Zzz from kisser only (they're asleep)
+      zzzTimer++;
+      if (zzzTimer % 55 === 0) {
+        spawnZzz(player.x + player.r * 0.6, player.y - player.r * 0.85);
+      }
+
+      for (let i = hearts.length - 1; i >= 0; i--) {
+        const h = hearts[i];
+        h.x += h.vx; h.y += h.vy; h.life--;
+        if (h.life <= 0) hearts.splice(i, 1);
+      }
+      for (let i = zzzs.length - 1; i >= 0; i--) {
+        const z = zzzs[i];
+        z.x += z.dx; z.y += z.dy; z.life--;
+        z.alpha = z.life / 95;
+        if (z.life <= 0) zzzs.splice(i, 1);
+      }
+    }
+
+    // ── DRAW ───────────────────────────────────────────────────────
+    function draw() {
+      ctx.clearRect(0, 0, W, H);
+
+      if (state === 'loading') {
+        ctx.fillStyle = '#ff9fb2'; ctx.font = '22px Segoe UI';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText('Loading…', W / 2, H / 2);
+        return;
+      }
+
+      if (state === 'select')    { drawSelect(Date.now() / 16); return; }
+      if (state === 'dozing')    { drawDozing(dozingTick); return; }
+      if (state === 'countdown') { drawCountdown(countdownTick); return; }
+
+      // ── playing / win ──
+      drawGameBoard();
+
+      // Zzz from kisser
+      for (const z of zzzs) {
+        ctx.save();
+        ctx.globalAlpha = Math.max(0, z.alpha);
+        ctx.fillStyle = '#aac'; ctx.font = 'bold 14px serif';
+        ctx.textAlign = 'left';
+        ctx.fillText('z', z.x, z.y);
+        ctx.restore();
+      }
+
+      // Floating hearts
+      for (const h of hearts) heart(h.x, h.y, h.size, h.life / 100);
+
+      if (state === 'win') drawWin();
+    }
+
+    // ── INPUT ──────────────────────────────────────────────────────
+    document.addEventListener('keydown', e => { keys[e.key] = true; e.preventDefault(); });
+    document.addEventListener('keyup',   e => { keys[e.key] = false; });
+
+    canvas.addEventListener('mousemove', e => {
+      if (state !== 'select') { canvas.style.cursor = 'default'; return; }
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = W / rect.width, scaleY = H / rect.height;
+      const mx = (e.clientX - rect.left) * scaleX;
+      const my = (e.clientY - rect.top)  * scaleY;
+      hoveredIdx = SELECT_POS.findIndex(p => dist({x: mx, y: my}, p) < SELECT_R + 10);
+      canvas.style.cursor = hoveredIdx >= 0 ? 'pointer' : 'default';
+    });
+
+    canvas.addEventListener('click', e => {
+      if (state !== 'select' || hoveredIdx < 0) return;
+      selectedIdx = hoveredIdx;
+
+      // Assign images
+      player.imgKey = ALL_KEYS[selectedIdx];
+      const others  = ALL_KEYS.filter((_, i) => i !== selectedIdx);
+      runners.forEach((rn, i) => { rn.imgKey = others[i]; });
+
+      // Player starts in center
+      player.x = W / 2; player.y = H / 2;
+
+      state = 'dozing';
+      dozingTick = 0;
+      instrEl.textContent = 'WASD or Arrow Keys to sleep-walk';
+      canvas.style.cursor = 'default';
+    });
+
+    // ── LOOP ───────────────────────────────────────────────────────
+    function loop() { update(); draw(); requestAnimationFrame(loop); }
+    loop();
+  </script>
+</body>
+</html>
