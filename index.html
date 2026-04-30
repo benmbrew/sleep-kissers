@@ -85,12 +85,24 @@
     }
     #startBtn:hover { background: #ffb3c6; }
     #loginScores { color: #888; font-size: 0.82rem; max-width: 480px; text-align: center; line-height: 1.7; }
+    #joyZone {
+      display: none;
+      margin-top: 8px;
+      touch-action: none;
+    }
+    #joyCanvas {
+      display: block;
+      touch-action: none;
+    }
   </style>
 </head>
 <body>
   <h1>💤 Sleep Kissers 💋</h1>
   <div id="hud">Kisses: <span id="score">0</span> / 3<span id="timerDisplay" style="display:none"> &nbsp;·&nbsp; ⏱ <span id="timerVal">0.0</span>s</span></div>
   <canvas id="gameCanvas" width="860" height="600"></canvas>
+  <div id="joyZone">
+    <canvas id="joyCanvas" width="240" height="130"></canvas>
+  </div>
   <div id="instructions">WASD or Arrow Keys &nbsp;·&nbsp; Click a face to pick your kisser</div>
   <button id="playAgainBtn">Play Again 💤</button>
 
@@ -174,6 +186,11 @@
     const startBtn     = document.getElementById('startBtn');
     const loginScoresEl= document.getElementById('loginScores');
     const playAgainBtn = document.getElementById('playAgainBtn');
+    const joyZoneEl   = document.getElementById('joyZone');
+    const joyCanvas   = document.getElementById('joyCanvas');
+    const joyCtx      = joyCanvas.getContext('2d');
+    const JOY_BASE_X  = joyCanvas.width  / 2;
+    const JOY_BASE_Y  = joyCanvas.height / 2;
     const W = canvas.width, H = canvas.height;
 
     // ── State machine ──────────────────────────────────────────────
@@ -187,7 +204,8 @@
     const GO_TICKS     = 45;
     const COUNTDOWN_TOTAL = CD_PER_NUM * 3 + GO_TICKS;
 
-    let winTick  = 0;
+    let winTick      = 0;
+    let gameOverTick = 0;
     let score    = 0;
     const CHAR_NAMES = ['Bri', 'Benzi', 'Gabey', 'Jonny Boy'];
     let playingTick = 0;
@@ -259,7 +277,7 @@
 
     function resetGame() {
       score = 0; scoreEl.textContent = 0;
-      playingTick = 0; winTick = 0; dozingTick = 0; countdownTick = 0;
+      playingTick = 0; winTick = 0; gameOverTick = 0; dozingTick = 0; countdownTick = 0;
       zzzTimer = 0; hearts.length = 0; zzzs.length = 0;
       kissReactionRunner = null; kissReaction2Runner = null; kissReactionTick = 0;
       selectedIdx = -1; hoveredIdx = -1; hoveredDiff = -1; selectedDiff = -1;
@@ -267,6 +285,7 @@
       runners[0].x = 110;     runners[0].y = 110;     runners[0].kissed = false; runners[0].vx = 0; runners[0].vy = 0; runners[0].kissTimer = 0;
       runners[1].x = W - 110; runners[1].y = 110;     runners[1].kissed = false; runners[1].vx = 0; runners[1].vy = 0; runners[1].kissTimer = 0;
       runners[2].x = W / 2;   runners[2].y = H - 110; runners[2].kissed = false; runners[2].vx = 0; runners[2].vy = 0; runners[2].kissTimer = 0;
+      joyZoneEl.style.display = 'none';
       timerDisplay.style.display = 'none';
       instrEl.textContent = 'WASD or Arrow Keys · Click a face to pick your kisser';
       canvas.style.cursor = 'default';
@@ -337,6 +356,14 @@
       {  vx:  1.1, vy:  0.8 },
       {  vx: -1.2, vy:  0.9 },
       {  vx:  0.7, vy: -1.3 },
+    ];
+
+    // Static obstacles — horizontal and vertical bars to navigate around
+    const OBSTACLES = [
+      { x: 180, y: 180, w: 160, h: 28 },
+      { x: 490, y: 205, w: 28, h: 140 },
+      { x: 195, y: 385, w: 145, h: 28 },
+      { x: 585, y: 345, w: 28, h: 130 },
     ];
 
     // ── Particles ──────────────────────────────────────────────────
@@ -429,8 +456,8 @@
     function drawClosedEyes(x, y, r) {
       ctx.save();
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.font = `${Math.round(r * 0.55)}px serif`;
-      ctx.fillText('👄', x, y + r * 0.32); ctx.restore();
+      ctx.font = `${Math.round(r * 0.9)}px 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', serif`;
+      ctx.fillText('👄', x, y + r * 0.28); ctx.restore();
     }
 
     function drawSpeechBubble(x, y, text) {
@@ -454,6 +481,54 @@
       ctx.save();
       ctx.translate(x, y); ctx.rotate(swayAmt); ctx.translate(-x, -y);
       circleClipImage(imgKey, x, y, r, alpha); ctx.restore();
+    }
+
+    // ── OBSTACLES ─────────────────────────────────────────────────
+    function drawObstacles() {
+      OBSTACLES.forEach(ob => {
+        ctx.save();
+        ctx.beginPath(); ctx.roundRect(ob.x, ob.y, ob.w, ob.h, 8);
+        ctx.shadowColor = '#5533bb'; ctx.shadowBlur = 14;
+        ctx.fillStyle = '#110820'; ctx.fill();
+        ctx.shadowBlur = 0;
+        ctx.strokeStyle = '#6644cc'; ctx.lineWidth = 2.5; ctx.stroke();
+        ctx.restore();
+      });
+    }
+
+    function resolveObstacle(c) {
+      OBSTACLES.forEach(ob => {
+        const nearX = Math.max(ob.x, Math.min(c.x, ob.x + ob.w));
+        const nearY = Math.max(ob.y, Math.min(c.y, ob.y + ob.h));
+        const dx = c.x - nearX, dy = c.y - nearY;
+        const d  = Math.hypot(dx, dy);
+        if (d < c.r && d > 0) {
+          const nx = dx / d, ny = dy / d, ov = c.r - d;
+          c.x += nx * ov; c.y += ny * ov;
+          if ('vx' in c) {
+            const dot = c.vx * nx + c.vy * ny;
+            if (dot < 0) { c.vx -= 1.5 * dot * nx; c.vy -= 1.5 * dot * ny; }
+          }
+        }
+      });
+    }
+
+    // ── JOYSTICK CANVAS ────────────────────────────────────────────
+    function drawJoystick() {
+      joyCtx.clearRect(0, 0, joyCanvas.width, joyCanvas.height);
+      const knobX = JOY_BASE_X + joy.dx * (JOY_OUTER - JOY_KNOB);
+      const knobY = JOY_BASE_Y + joy.dy * (JOY_OUTER - JOY_KNOB);
+      joyCtx.save();
+      // Outer ring — always visible as target zone
+      joyCtx.globalAlpha = 0.35;
+      joyCtx.beginPath(); joyCtx.arc(JOY_BASE_X, JOY_BASE_Y, JOY_OUTER, 0, Math.PI * 2);
+      joyCtx.strokeStyle = '#ff9fb2'; joyCtx.lineWidth = 2.5; joyCtx.stroke();
+      joyCtx.fillStyle = 'rgba(255,159,178,0.1)'; joyCtx.fill();
+      // Knob
+      joyCtx.globalAlpha = joy.active ? 0.85 : 0.3;
+      joyCtx.beginPath(); joyCtx.arc(knobX, knobY, JOY_KNOB, 0, Math.PI * 2);
+      joyCtx.fillStyle = '#ff9fb2'; joyCtx.fill();
+      joyCtx.restore();
     }
 
     // ── DIFFICULTY SCREEN ─────────────────────────────────────────
@@ -590,6 +665,7 @@
     }
 
     function drawGameBoard(cdTick) {
+      drawObstacles();
       const psway = Math.sin((cdTick ?? 0) * 0.06) * 0.13;
       drawSwayed(player.imgKey, player.x, player.y, player.r, psway, 1);
       drawClosedEyes(player.x, player.y, player.r);
@@ -637,25 +713,25 @@
       const diffColor = selectedDiff >= 0 ? DIFFS[selectedDiff].color : '#ff9fb2';
       const entries   = scoresCache[diffLabel];
 
-      ctx.font = 'bold 14px Segoe UI'; ctx.fillStyle = diffColor;
-      ctx.fillText(`${diffLabel} Leaderboard 🏆`, W / 2, 152);
+      ctx.font = 'bold 18px Segoe UI'; ctx.fillStyle = diffColor;
+      ctx.fillText(`${diffLabel} Leaderboard 🏆`, W / 2, 155);
 
       if (!cacheReady[diffLabel]) {
-        ctx.font = '14px Segoe UI'; ctx.fillStyle = '#666';
-        ctx.fillText('Loading scores…', W / 2, 200);
+        ctx.font = '17px Segoe UI'; ctx.fillStyle = '#666';
+        ctx.fillText('Loading scores…', W / 2, 205);
       } else if (!entries || entries.length === 0) {
-        ctx.font = '14px Segoe UI'; ctx.fillStyle = '#666';
-        ctx.fillText('No scores yet', W / 2, 200);
+        ctx.font = '17px Segoe UI'; ctx.fillStyle = '#666';
+        ctx.fillText('No scores yet', W / 2, 205);
       } else {
         const medals = ['🥇','🥈','🥉'];
         entries.forEach((entry, i) => {
           const isNew = (i === newScoreRank);
-          const y = 180 + i * 36;
+          const y = 190 + i * 40;
 
           ctx.fillStyle = isNew ? 'rgba(255,159,178,0.13)' : (i % 2 === 0 ? 'rgba(255,255,255,0.03)' : 'transparent');
-          ctx.fillRect(W/2 - 300, y - 15, 600, 30);
+          ctx.fillRect(W/2 - 300, y - 17, 600, 34);
 
-          ctx.font = isNew ? 'bold 14px Segoe UI' : '13px Segoe UI';
+          ctx.font = isNew ? 'bold 17px Segoe UI' : '16px Segoe UI';
           ctx.fillStyle = isNew ? '#ff9fb2' : (i < 3 ? '#fff' : '#bbb');
 
           ctx.textAlign = 'left';
@@ -665,10 +741,31 @@
           ctx.fillText(`${entry.score.toLocaleString()} pts`, W/2 + 155, y);
 
           ctx.fillStyle = isNew ? '#ffb3c6' : '#666';
-          ctx.font = '12px Segoe UI';
+          ctx.font = '14px Segoe UI';
           ctx.fillText(`${entry.time}s`, W/2 + 285, y);
         });
       }
+      ctx.restore();
+    }
+
+    // ── GAME OVER SCREEN ───────────────────────────────────────────
+    function drawGameOver() {
+      ctx.save();
+      ctx.fillStyle = 'rgba(10,5,20,0.92)'; ctx.fillRect(0, 0, W, H);
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+
+      const shake = gameOverTick < 20 ? (Math.random() - 0.5) * 6 : 0;
+      const pulse  = 1 + 0.03 * Math.sin(gameOverTick * 0.1);
+      ctx.font = `bold ${Math.round(58 * pulse)}px Segoe UI`;
+      ctx.fillStyle = '#ff4466';
+      ctx.fillText('Game Over 😟', W / 2 + shake, H / 2 - 60 + shake);
+
+      ctx.font = `bold 36px Segoe UI`;
+      ctx.fillStyle = '#ffb3c6';
+      ctx.fillText('Daddy woke up!', W / 2, H / 2 + 14);
+
+      ctx.font = '20px Segoe UI'; ctx.fillStyle = '#888';
+      ctx.fillText('0 pts — better luck next time', W / 2, H / 2 + 64);
       ctx.restore();
     }
 
@@ -678,7 +775,7 @@
 
       if (state === 'dozing') {
         dozingTick++;
-        if (dozingTick >= DOZING_TICKS) { state = 'countdown'; countdownTick = 0; }
+        if (dozingTick >= DOZING_TICKS) { state = 'countdown'; countdownTick = 0; joyZoneEl.style.display = 'block'; }
         return;
       }
 
@@ -696,11 +793,20 @@
         return;
       }
 
-      if (state === 'win') { winTick++; return; }
+      if (state === 'win')      { winTick++;      return; }
+      if (state === 'gameover') { gameOverTick++; return; }
 
       // ── Playing ──
       elapsedSeconds = (Date.now() - gameStartTime) / 1000;
       timerValEl.textContent = elapsedSeconds.toFixed(1);
+
+      if (elapsedSeconds >= 45) {
+        state = 'gameover';
+        joyZoneEl.style.display = 'none';
+        timerDisplay.style.display = 'none';
+        playAgainBtn.style.display = 'block';
+        return;
+      }
 
       let dx = 0, dy = 0;
       if (keys['ArrowLeft']  || keys['a'] || keys['A']) dx -= 1;
@@ -713,6 +819,7 @@
       player.y += dy * PLAYER_SPEED;
       player.x = Math.max(player.r, Math.min(W - player.r, player.x));
       player.y = Math.max(player.r, Math.min(H - player.r, player.y));
+      resolveObstacle(player);
       player.sway += 0.09;
 
       runners.forEach((rn, ri) => {
@@ -753,6 +860,7 @@
         }
         rn.x += rn.vx; rn.y += rn.vy;
         clamp(rn);
+        resolveObstacle(rn);
         if (rn.kissTimer > 0) rn.kissTimer--;
 
         if (!rn.kissed && dist(player, rn) < player.r + rn.r) {
@@ -774,6 +882,7 @@
             pushScore(playerName, finalScore, winTime, selectedDiff);
             setTimeout(() => {
               state = 'win';
+              joyZoneEl.style.display = 'none';
               timerDisplay.style.display = 'none';
               playAgainBtn.style.display = 'block';
             }, 700);
@@ -842,19 +951,8 @@
         if (last) drawSpeechBubble(last.x, last.y - last.r - 5, `PLEASE GOD ${charName} WAKE UP, PLEASE WAKE UP`);
       }
 
-      if (joy.active) {
-        const knobX = joy.baseX + joy.dx * (JOY_OUTER - JOY_KNOB);
-        const knobY = joy.baseY + joy.dy * (JOY_OUTER - JOY_KNOB);
-        ctx.save();
-        ctx.globalAlpha = 0.35;
-        ctx.beginPath(); ctx.arc(joy.baseX, joy.baseY, JOY_OUTER, 0, Math.PI * 2);
-        ctx.strokeStyle = '#fff'; ctx.lineWidth = 3; ctx.stroke(); ctx.fillStyle = '#fff'; ctx.fill();
-        ctx.globalAlpha = 0.7;
-        ctx.beginPath(); ctx.arc(knobX, knobY, JOY_KNOB, 0, Math.PI * 2);
-        ctx.fillStyle = '#fff'; ctx.fill(); ctx.restore();
-      }
-
-      if (state === 'win') drawWin();
+      if (state === 'win')      drawWin();
+      if (state === 'gameover') drawGameOver();
     }
 
     // ── INPUT ──────────────────────────────────────────────────────
@@ -875,21 +973,21 @@
       };
     }
 
+    function joyZoneTouch(touch) {
+      const rect = joyCanvas.getBoundingClientRect();
+      return {
+        x: (touch.clientX - rect.left) * (joyCanvas.width  / rect.width),
+        y: (touch.clientY - rect.top)  * (joyCanvas.height / rect.height),
+      };
+    }
+
     canvas.addEventListener('touchstart', e => {
       e.preventDefault();
-      for (const t of e.changedTouches) {
-        const p = canvasTouch(t);
-        if (state === 'playing' && !joy.active) {
-          joy.active = true; joy.id = t.identifier;
-          joy.baseX = p.x; joy.baseY = p.y; joy.dx = 0; joy.dy = 0;
-        }
-      }
     }, { passive: false });
 
     canvas.addEventListener('touchmove', e => {
       e.preventDefault();
       for (const t of e.changedTouches) {
-        if (t.identifier === joy.id) { const p = canvasTouch(t); joyUpdate(p.x, p.y); }
         if (state === 'difficulty') {
           const p = canvasTouch(t);
           hoveredDiff = DIFFS.findIndex((_, i) =>
@@ -902,7 +1000,6 @@
     canvas.addEventListener('touchend', e => {
       e.preventDefault();
       for (const t of e.changedTouches) {
-        if (t.identifier === joy.id) { joy.active = false; joy.dx = 0; joy.dy = 0; }
         const p = canvasTouch(t);
         if (state === 'difficulty') {
           const di = DIFFS.findIndex((_, i) =>
@@ -926,6 +1023,31 @@
             canvas.style.cursor = 'default';
           }
         }
+      }
+    }, { passive: false });
+
+    joyCanvas.addEventListener('touchstart', e => {
+      e.preventDefault();
+      for (const t of e.changedTouches) {
+        if (state === 'playing' && !joy.active) {
+          joy.active = true; joy.id = t.identifier;
+          joy.baseX = JOY_BASE_X; joy.baseY = JOY_BASE_Y;
+          const p = joyZoneTouch(t); joyUpdate(p.x, p.y);
+        }
+      }
+    }, { passive: false });
+
+    joyCanvas.addEventListener('touchmove', e => {
+      e.preventDefault();
+      for (const t of e.changedTouches) {
+        if (t.identifier === joy.id) { const p = joyZoneTouch(t); joyUpdate(p.x, p.y); }
+      }
+    }, { passive: false });
+
+    joyCanvas.addEventListener('touchend', e => {
+      e.preventDefault();
+      for (const t of e.changedTouches) {
+        if (t.identifier === joy.id) { joy.active = false; joy.dx = 0; joy.dy = 0; }
       }
     }, { passive: false });
 
@@ -972,7 +1094,7 @@
     });
 
     // ── LOOP ───────────────────────────────────────────────────────
-    function loop() { update(); draw(); requestAnimationFrame(loop); }
+    function loop() { update(); draw(); drawJoystick(); requestAnimationFrame(loop); }
     loop();
   </script>
 </body>
