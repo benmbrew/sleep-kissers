@@ -30,9 +30,14 @@
       touch-action: none;
     }
     #instructions { margin-top: 6px; font-size: 0.75rem; color: #666; }
-    #playAgainBtn {
+    #endBtns {
       display: none;
+      flex-direction: row;
+      gap: 12px;
       margin-top: 10px;
+      align-items: center;
+    }
+    #playAgainBtn {
       padding: 10px 28px;
       font-size: 1rem;
       font-family: 'Segoe UI', sans-serif;
@@ -45,6 +50,33 @@
       letter-spacing: 1px;
     }
     #playAgainBtn:hover { background: #ffb3c6; }
+    #replayBtn {
+      padding: 10px 28px;
+      font-size: 1rem;
+      font-family: 'Segoe UI', sans-serif;
+      font-weight: bold;
+      background: #1a1030;
+      color: #ff9fb2;
+      border: 2px solid #ff9fb2;
+      border-radius: 10px;
+      cursor: pointer;
+      letter-spacing: 1px;
+    }
+    #replayBtn:hover { background: #2a1a4e; }
+    #closeReplayBtn {
+      display: none;
+      margin-top: 10px;
+      padding: 8px 22px;
+      font-size: 0.9rem;
+      font-family: 'Segoe UI', sans-serif;
+      background: #1a1030;
+      color: #888;
+      border: 1px solid #444;
+      border-radius: 10px;
+      cursor: pointer;
+      letter-spacing: 1px;
+    }
+    #closeReplayBtn:hover { color: #fff; border-color: #888; }
     #loginOverlay {
       display: none;
       position: fixed;
@@ -104,7 +136,11 @@
     <canvas id="joyCanvas" width="240" height="130"></canvas>
   </div>
   <div id="instructions">WASD or Arrow Keys &nbsp;·&nbsp; Click a face to pick your kisser</div>
-  <button id="playAgainBtn">Play Again 💤</button>
+  <div id="endBtns">
+    <button id="playAgainBtn">Play Again 💤</button>
+    <button id="replayBtn">Watch Replay 📽️</button>
+  </div>
+  <button id="closeReplayBtn">✕ Close Replay</button>
 
   <div id="loginOverlay">
     <h2>💤 Sleep Kissers 💋</h2>
@@ -185,7 +221,10 @@
     const nameInput    = document.getElementById('nameInput');
     const startBtn     = document.getElementById('startBtn');
     const loginScoresEl= document.getElementById('loginScores');
-    const playAgainBtn = document.getElementById('playAgainBtn');
+    const endBtnsEl       = document.getElementById('endBtns');
+    const playAgainBtn    = document.getElementById('playAgainBtn');
+    const replayBtn       = document.getElementById('replayBtn');
+    const closeReplayBtn  = document.getElementById('closeReplayBtn');
     const joyZoneEl   = document.getElementById('joyZone');
     const joyCanvas   = document.getElementById('joyCanvas');
     const joyCtx      = joyCanvas.getContext('2d');
@@ -204,8 +243,11 @@
     const GO_TICKS     = 45;
     const COUNTDOWN_TOTAL = CD_PER_NUM * 3 + GO_TICKS;
 
-    let winTick      = 0;
-    let gameOverTick = 0;
+    let winTick           = 0;
+    let gameOverTick      = 0;
+    let replayFrames      = [];
+    let replayTick        = 0;
+    let replayReturnState = 'gameover';
     let score    = 0;
     const CHAR_NAMES = ['Bri', 'Benzi', 'Gabey', 'Jonny Boy'];
     let playingTick = 0;
@@ -270,14 +312,29 @@
 
     // ── Play Again ─────────────────────────────────────────────────
     playAgainBtn.addEventListener('click', () => {
-      playAgainBtn.style.display = 'none';
+      endBtnsEl.style.display = 'none';
       resetGame();
       state = 'difficulty';
     });
 
+    replayBtn.addEventListener('click', () => {
+      replayReturnState = state;
+      replayTick = 0;
+      state = 'replay';
+      endBtnsEl.style.display = 'none';
+      closeReplayBtn.style.display = 'block';
+    });
+
+    closeReplayBtn.addEventListener('click', () => {
+      state = replayReturnState;
+      closeReplayBtn.style.display = 'none';
+      endBtnsEl.style.display = 'flex';
+    });
+
     function resetGame() {
       score = 0; scoreEl.textContent = 0;
-      playingTick = 0; winTick = 0; gameOverTick = 0; dozingTick = 0; countdownTick = 0;
+      playingTick = 0; winTick = 0; gameOverTick = 0; replayTick = 0;
+      replayFrames = []; dozingTick = 0; countdownTick = 0;
       zzzTimer = 0; hearts.length = 0; zzzs.length = 0;
       kissReactionRunner = null; kissReaction2Runner = null; kissReactionTick = 0;
       selectedIdx = -1; hoveredIdx = -1; hoveredDiff = -1; selectedDiff = -1;
@@ -287,6 +344,8 @@
       runners[2].x = W / 2;   runners[2].y = H - 110; runners[2].kissed = false; runners[2].vx = 0; runners[2].vy = 0; runners[2].kissTimer = 0;
       joyZoneEl.style.display = 'none';
       timerDisplay.style.display = 'none';
+      endBtnsEl.style.display = 'none';
+      closeReplayBtn.style.display = 'none';
       instrEl.textContent = 'WASD or Arrow Keys · Click a face to pick your kisser';
       canvas.style.cursor = 'default';
     }
@@ -358,13 +417,42 @@
       {  vx:  0.7, vy: -1.3 },
     ];
 
-    // Static obstacles — horizontal and vertical bars to navigate around
-    const OBSTACLES = [
-      { x: 180, y: 180, w: 160, h: 28 },
-      { x: 490, y: 205, w: 28, h: 140 },
-      { x: 195, y: 385, w: 145, h: 28 },
-      { x: 585, y: 345, w: 28, h: 130 },
-    ];
+    // Obstacles — regenerated each game, one per quadrant
+    let OBSTACLES = [];
+
+    function generateObstacles() {
+      // Four zones, one per quadrant, inset from edges and corners
+      const zones = [
+        { x1: 155, y1: 150, x2: 395, y2: 265 },  // top-left
+        { x1: 465, y1: 150, x2: 705, y2: 265 },  // top-right
+        { x1: 155, y1: 330, x2: 395, y2: 465 },  // bottom-left
+        { x1: 465, y1: 330, x2: 705, y2: 465 },  // bottom-right
+      ];
+      // Keep clear of character starting positions
+      const noGo = [
+        { x: W / 2,   y: H / 2,     r: 90 },  // player
+        { x: 110,     y: 110,       r: 72 },  // runner 1
+        { x: W - 110, y: 110,       r: 72 },  // runner 2
+        { x: W / 2,   y: H - 110,   r: 72 },  // runner 3
+      ];
+      return zones.map(zone => {
+        const horiz = Math.random() < 0.5;
+        const w = Math.round(horiz ? 110 + Math.random() * 70 : 22 + Math.random() * 12);
+        const h = Math.round(horiz ? 22  + Math.random() * 12 : 90 + Math.random() * 70);
+        let x, y, ok = false, tries = 0;
+        while (!ok && tries < 30) {
+          x = Math.round(zone.x1 + Math.random() * Math.max(0, zone.x2 - zone.x1 - w));
+          y = Math.round(zone.y1 + Math.random() * Math.max(0, zone.y2 - zone.y1 - h));
+          ok = !noGo.some(c => {
+            const nx = Math.max(x, Math.min(c.x, x + w));
+            const ny = Math.max(y, Math.min(c.y, y + h));
+            return Math.hypot(c.x - nx, c.y - ny) < c.r;
+          });
+          tries++;
+        }
+        return { x, y, w, h };
+      });
+    }
 
     // ── Particles ──────────────────────────────────────────────────
     const hearts = [];
@@ -454,10 +542,28 @@
     }
 
     function drawClosedEyes(x, y, r) {
+      const w = r * 0.86, h = r * 0.42;
+      const cx = x, cy = y + r * 0.24;
       ctx.save();
-      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.font = `${Math.round(r * 0.9)}px 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', serif`;
-      ctx.fillText('👄', x, y + r * 0.28); ctx.restore();
+      ctx.fillStyle   = '#d4004a';
+      ctx.strokeStyle = '#aa003a';
+      ctx.lineWidth   = 1.5;
+      ctx.beginPath();
+      // upper lip (Cupid's bow)
+      ctx.moveTo(cx - w/2, cy);
+      ctx.bezierCurveTo(cx - w*0.38, cy - h*0.7,  cx - w*0.13, cy - h*0.92, cx,        cy - h*0.28);
+      ctx.bezierCurveTo(cx + w*0.13, cy - h*0.92, cx + w*0.38, cy - h*0.7,  cx + w/2,  cy);
+      // lower lip
+      ctx.bezierCurveTo(cx + w*0.38, cy + h*0.9,  cx - w*0.38, cy + h*0.9,  cx - w/2,  cy);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      // gloss highlight
+      ctx.fillStyle = 'rgba(255,255,255,0.22)';
+      ctx.beginPath();
+      ctx.ellipse(cx, cy + h*0.22, w*0.28, h*0.2, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
     }
 
     function drawSpeechBubble(x, y, text) {
@@ -748,6 +854,54 @@
       ctx.restore();
     }
 
+    // ── REPLAY SCREEN ─────────────────────────────────────────────
+    function drawReplayFrame(frame) {
+      if (!frame) return;
+      drawObstacles();
+
+      // Player
+      const sway = Math.sin(frame.tick * 0.09) * 0.18;
+      drawSwayed(player.imgKey, frame.px, frame.py, player.r, sway, 1);
+      drawClosedEyes(frame.px, frame.py, player.r);
+      glow(frame.px, frame.py, player.r, '#6666ff');
+
+      // Runners
+      frame.rns.forEach(([rx, ry, kissed], i) => {
+        circleClipImage(runners[i].imgKey, rx, ry, runners[i].r);
+        if (kissed) { kissOverlay(rx, ry, runners[i].r); }
+        else        { ring(rx, ry, runners[i].r, '#f0c040', 2.5); }
+      });
+
+      // Particles
+      frame.hearts.forEach(([x, y, size, life]) => heart(x, y, size, life / 100));
+      frame.zzzs.forEach(([x, y, alpha]) => {
+        ctx.save(); ctx.globalAlpha = Math.max(0, alpha);
+        ctx.fillStyle = '#aac'; ctx.font = 'bold 14px serif'; ctx.textAlign = 'left';
+        ctx.fillText('z', x, y); ctx.restore();
+      });
+
+      // Progress bar
+      const prog = replayTick / Math.max(1, replayFrames.length - 1);
+      ctx.save();
+      ctx.fillStyle = 'rgba(0,0,0,0.6)';
+      ctx.fillRect(0, H - 26, W, 26);
+      ctx.fillStyle = '#ff9fb2';
+      ctx.fillRect(0, H - 26, W * prog, 26);
+
+      ctx.textBaseline = 'middle';
+      ctx.font = 'bold 13px Segoe UI'; ctx.fillStyle = '#fff';
+      ctx.textAlign = 'left';
+      ctx.fillText('▶ REPLAY', 10, H - 13);
+
+      ctx.textAlign = 'center';
+      ctx.fillText(`💋 ${frame.score} / 3`, W / 2, H - 13);
+
+      ctx.textAlign = 'right'; ctx.fillStyle = '#ccc';
+      ctx.font = '12px Segoe UI';
+      ctx.fillText(`${frame.t.toFixed(1)}s`, W - 10, H - 13);
+      ctx.restore();
+    }
+
     // ── GAME OVER SCREEN ───────────────────────────────────────────
     function drawGameOver() {
       ctx.save();
@@ -775,7 +929,7 @@
 
       if (state === 'dozing') {
         dozingTick++;
-        if (dozingTick >= DOZING_TICKS) { state = 'countdown'; countdownTick = 0; joyZoneEl.style.display = 'block'; }
+        if (dozingTick >= DOZING_TICKS) { OBSTACLES = generateObstacles(); state = 'countdown'; countdownTick = 0; joyZoneEl.style.display = 'block'; }
         return;
       }
 
@@ -783,6 +937,7 @@
         countdownTick++;
         if (countdownTick >= COUNTDOWN_TOTAL) {
           state = 'playing';
+          replayFrames = [];
           gameStartTime = Date.now();
           timerDisplay.style.display = 'inline';
           runners.forEach((rn, i) => {
@@ -795,6 +950,7 @@
 
       if (state === 'win')      { winTick++;      return; }
       if (state === 'gameover') { gameOverTick++; return; }
+      if (state === 'replay')   { replayTick = (replayTick + 1) % Math.max(1, replayFrames.length); return; }
 
       // ── Playing ──
       elapsedSeconds = (Date.now() - gameStartTime) / 1000;
@@ -804,7 +960,7 @@
         state = 'gameover';
         joyZoneEl.style.display = 'none';
         timerDisplay.style.display = 'none';
-        playAgainBtn.style.display = 'block';
+        endBtnsEl.style.display = 'flex';
         return;
       }
 
@@ -884,7 +1040,7 @@
               state = 'win';
               joyZoneEl.style.display = 'none';
               timerDisplay.style.display = 'none';
-              playAgainBtn.style.display = 'block';
+              endBtnsEl.style.display = 'flex';
             }, 700);
           }
         }
@@ -905,6 +1061,19 @@
         z.alpha = z.life / 95;
         if (z.life <= 0) zzzs.splice(i, 1);
       }
+
+      // Record frame for replay (cap at ~2800 frames / ~47s)
+      if (replayFrames.length < 2800) {
+        replayFrames.push({
+          tick: playingTick,
+          t: elapsedSeconds,
+          px: player.x, py: player.y,
+          rns: runners.map(rn => [rn.x, rn.y, rn.kissed ? 1 : 0]),
+          hearts: hearts.map(h => [h.x, h.y, h.size, h.life]),
+          zzzs: zzzs.map(z => [z.x, z.y, z.alpha]),
+          score,
+        });
+      }
     }
 
     // ── DRAW ───────────────────────────────────────────────────────
@@ -923,6 +1092,7 @@
       if (state === 'select')    { drawSelect(Date.now() / 16); return; }
       if (state === 'dozing')    { drawDozing(dozingTick); return; }
       if (state === 'countdown') { drawCountdown(countdownTick); return; }
+      if (state === 'replay')    { drawReplayFrame(replayFrames[replayTick]); return; }
 
       drawGameBoard();
 
